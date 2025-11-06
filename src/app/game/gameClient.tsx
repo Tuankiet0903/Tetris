@@ -16,9 +16,22 @@ type Cell = { filled: boolean; color?: string; kind?: Tetromino };
 
 type Props = { initialName?: string };
 
+type Challenge = {
+  type: "speed" | "reverse" | "none";
+  duration: number;
+  startTime: number | null;
+};
+
+// Single-player only: PvE/AI removed
+type LastAction = "none" | "move" | "soft" | "hard" | "rotate";
+
 const COLS = 10;
 const ROWS = 20;
 const CELL = 28;
+// Scale factor for display (set to 2 to make play frame bigger)
+const SCALE = 2;
+// DRAW_CELL is the pixel size used for canvas drawing (keeps game logic in cell units)
+const DRAW_CELL = CELL * SCALE;
 
 const COLORS: Record<Tetromino, string> = {
   I: "#06b6d4",
@@ -144,15 +157,25 @@ function newBag(): Tetromino[] {
   return bag;
 }
 
+function createEmptyBoard(): Cell[][] {
+  return Array.from({ length: ROWS }, () =>
+    Array.from({ length: COLS }, () => ({ filled: false }))
+  );
+}
+
 export default function GameClient({ initialName }: Props) {
   const router = useRouter();
 
-  // Player name without useSearchParams
-  const player =
-    initialName ||
-    (typeof window !== "undefined"
-      ? localStorage.getItem("playerName") || "Player"
-      : "Player");
+  // Player name state management
+  const [player, setPlayer] = useState(initialName || "Player");
+
+  // Update player name from localStorage after mount
+  useEffect(() => {
+    const savedName = localStorage.getItem("playerName");
+    if (savedName) {
+      setPlayer(savedName);
+    }
+  }, []);
 
   // Images
   const blockImgRef = useRef<Partial<Record<Tetromino, HTMLImageElement>>>({});
@@ -170,10 +193,34 @@ export default function GameClient({ initialName }: Props) {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const reqRef = useRef<number | null>(null);
+  const [fogMode, setFogMode] = useState(false);
+  // single-player mode only
 
+  // Keep old refs for backward compatibility with existing code
+  const boardRef = useRef<Cell[][]>(createEmptyBoard());
+  const curRef = useRef<Piece | null>(null);
+  const nextRef = useRef<Tetromino[]>(newBag());
+  const gravityMsRef = useRef(800);
+  const accRef = useRef(0);
+  const lastTimeRef = useRef(0);
+  const lastActionRef = useRef<LastAction>("none");
+  const rotatedWithKickRef = useRef(false);
+  const b2bRef = useRef(false);
+
+  // PvE/AI removed
+
+  // Keep score/lines/level in state for UI updates
   const [score, setScore] = useState(0);
   const [lines, setLines] = useState(0);
   const [level, setLevel] = useState(1);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [seenChallenges, setSeenChallenges] = useState<Set<string>>(new Set());
+  const [challenge, setChallenge] = useState<Challenge>({
+    type: "none",
+    duration: 0,
+    startTime: null,
+  });
+  // AI/PvE removed
   const [best, setBest] = useState<number>(0);
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -185,22 +232,7 @@ export default function GameClient({ initialName }: Props) {
   }, []);
   const [running, setRunning] = useState(true);
   const [paused, setPaused] = useState(false);
-
-  type LastAction = "none" | "move" | "soft" | "hard" | "rotate";
-  const lastActionRef = useRef<LastAction>("none");
-  const rotatedWithKickRef = useRef(false);
-  const b2bRef = useRef(false);
-
-  const boardRef = useRef<Cell[][]>(
-    Array.from({ length: ROWS }, () =>
-      Array.from({ length: COLS }, () => ({ filled: false }))
-    )
-  );
-  const curRef = useRef<Piece | null>(null);
-  const nextRef = useRef<Tetromino[]>(newBag());
-  const gravityMsRef = useRef(800);
-  const accRef = useRef(0);
-  const lastTimeRef = useRef(0);
+  // PvE/AI and winner state removed
 
   const playMove = useSound("/sounds/move.mp3", 700);
   const playRotate = useSound("/sounds/rotate.mp3", 900);
@@ -230,6 +262,7 @@ export default function GameClient({ initialName }: Props) {
           localStorage.setItem("bestScoreTetris", String(b));
         return b;
       });
+      // Player died — regular game over handling above is sufficient
       return;
     }
     curRef.current = piece;
@@ -243,11 +276,11 @@ export default function GameClient({ initialName }: Props) {
     color: string,
     alpha = 1
   ) {
-    const pad = 2;
-    const x = px * CELL + pad;
-    const y = py * CELL + pad;
-    const w = CELL - pad * 2;
-    const r = 6;
+    const pad = 2 * SCALE;
+    const x = px * DRAW_CELL + pad;
+    const y = py * DRAW_CELL + pad;
+    const w = DRAW_CELL - pad * 2;
+    const r = 6 * SCALE;
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -371,14 +404,61 @@ export default function GameClient({ initialName }: Props) {
 
       setScore((s) => s + gained);
 
-      const newLevel = 1 + Math.floor((lines + cleared) / 10);
+      // Calculate new level - every 5 lines
+      const newLevel = 1 + Math.floor((lines + cleared) / 5);
       setLevel(newLevel);
-      gravityMsRef.current = Math.max(120, 800 - (newLevel - 1) * 60);
+      // Adjust gravity speed - reduce by 120ms each level
+      const baseSpeed = 800;
+      const reduction = (newLevel - 1) * 120; // 120ms reduction per level
+      gravityMsRef.current = Math.max(120, baseSpeed - reduction);
+
+      // Trigger challenges at specific levels
+      if (newLevel % 2 === 0) {
+        // Every 2 levels
+        setPaused(true);
+        // Alternate between speed and reverse challenges
+        // Level 2, 6, 10... -> Speed Challenge
+        // Level 4, 8, 12... -> Reverse Challenge
+        const challengeType = newLevel % 4 === 0 ? "reverse" : "speed";
+        const newChallenge: Challenge = {
+          type: challengeType as "speed" | "reverse",
+          duration: 30000,
+          startTime: null,
+        };
+
+        // Check if this is first time seeing this challenge
+        const isFirstTime = !seenChallenges.has(challengeType); // Longer countdown for first time (5s), shorter for repeats (3s)
+        const initialCountdown = isFirstTime ? 5 : 3;
+        setCountdown(initialCountdown);
+
+        const countdownInterval = setInterval(() => {
+          setCountdown((prev) => {
+            if (prev === null || prev <= 1) {
+              clearInterval(countdownInterval);
+              setPaused(false);
+              setChallenge({ ...newChallenge, startTime: Date.now() });
+              // Mark challenge as seen
+              if (isFirstTime) {
+                setSeenChallenges(
+                  (prev) => new Set([...prev, newChallenge.type])
+                );
+              }
+              return null;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+
+        // Reset challenge after duration
+        setTimeout(() => {
+          setChallenge({ type: "none", duration: 0, startTime: null });
+        }, newChallenge.duration + (isFirstTime ? 5000 : 3000)); // Add countdown time
+      }
 
       rotatedWithKickRef.current = false;
       lastActionRef.current = "none";
     }
-  }, [level, lines, playLine]);
+  }, [level, lines, playLine, seenChallenges]);
 
   const hardDrop = useCallback(() => {
     if (paused) return;
@@ -403,12 +483,16 @@ export default function GameClient({ initialName }: Props) {
       lastActionRef.current = "move";
       const cur = curRef.current;
       if (!cur || !running) return;
-      if (!collides(cur, boardRef.current, { x: dx, y: 0 })) {
-        cur.pos.x += dx;
+
+      // Reverse movement if challenge is active
+      const actualDx = challenge.type === "reverse" ? -dx : dx;
+
+      if (!collides(cur, boardRef.current, { x: actualDx, y: 0 })) {
+        cur.pos.x += actualDx;
         playMove();
       }
     },
-    [running, playMove, paused]
+    [running, playMove, paused, challenge.type]
   );
 
   const softDrop = useCallback(() => {
@@ -449,6 +533,8 @@ export default function GameClient({ initialName }: Props) {
     [running, playRotate, paused]
   );
 
+  // AI/PvE code removed - single player only
+
   const reset = useCallback(() => {
     boardRef.current = Array.from({ length: ROWS }, () =>
       Array.from({ length: COLS }, () => ({ filled: false }))
@@ -464,6 +550,10 @@ export default function GameClient({ initialName }: Props) {
     b2bRef.current = false;
     rotatedWithKickRef.current = false;
     lastActionRef.current = "none";
+
+    // Clear previous state and challenges
+    setChallenge({ type: "none", duration: 0, startTime: null });
+
     spawn();
   }, [spawn]);
 
@@ -495,60 +585,127 @@ export default function GameClient({ initialName }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [running, reset, move, softDrop, rotate, hardDrop]);
 
-  const draw = useCallback((ctx: CanvasRenderingContext2D) => {
-    const W = ctx.canvas.width,
-      H = ctx.canvas.height;
-    const grad = ctx.createLinearGradient(0, 0, W, H);
-    grad.addColorStop(0, "#0f172a");
-    grad.addColorStop(1, "#020617");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
+  const draw = useCallback(
+    (ctx: CanvasRenderingContext2D) => {
+      const W = ctx.canvas.width,
+        H = ctx.canvas.height;
+      const grad = ctx.createLinearGradient(0, 0, W, H);
+      grad.addColorStop(0, "#0f172a");
+      grad.addColorStop(1, "#020617");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
 
-    ctx.strokeStyle = "rgba(255,255,255,0.06)";
-    for (let y = 0; y <= ROWS; y++) {
-      const py = Math.round(y * CELL) + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(0, py);
-      ctx.lineTo(COLS * CELL, py);
-      ctx.stroke();
-    }
-    for (let x = 0; x <= COLS; x++) {
-      const px = Math.round(x * CELL) + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(px, 0);
-      ctx.lineTo(px, ROWS * CELL);
-      ctx.stroke();
-    }
-
-    const board = boardRef.current;
-    for (let y = 0; y < ROWS; y++)
-      for (let x = 0; x < COLS; x++) {
-        const c = board[y][x];
-        if (c.filled) drawCell(ctx, x, y, c.kind ?? null, c.color || "#fff", 1);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      for (let y = 0; y <= ROWS; y++) {
+        const py = Math.round(y * DRAW_CELL) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(0, py);
+        ctx.lineTo(COLS * DRAW_CELL, py);
+        ctx.stroke();
+      }
+      for (let x = 0; x <= COLS; x++) {
+        const px = Math.round(x * DRAW_CELL) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, ROWS * DRAW_CELL);
+        ctx.stroke();
       }
 
-    const cur = curRef.current;
-    if (cur) {
-      const ghost: Piece = { ...cur, pos: { ...cur.pos } };
-      while (!collides(ghost, board, { x: 0, y: 1 })) ghost.pos.y++;
-      for (let y = 0; y < cur.matrix.length; y++)
-        for (let x = 0; x < cur.matrix[y].length; x++) {
-          if (!cur.matrix[y][x]) continue;
-          const gx = ghost.pos.x + x,
-            gy = ghost.pos.y + y;
-          if (gy < 0) continue;
-          drawCell(ctx, gx, gy, cur.kind, cur.color, 0.35);
+      const board = boardRef.current;
+      const cur = curRef.current;
+
+      // Calculate visible area for fog mode (3x3 around falling piece)
+      const visibleArea: { [key: string]: boolean } = {};
+      if (fogMode && cur) {
+        // Find the center of all cells in the falling piece
+        let minX = Infinity,
+          maxX = -Infinity;
+        let minY = Infinity,
+          maxY = -Infinity;
+        let hasCells = false;
+
+        for (let y = 0; y < cur.matrix.length; y++) {
+          for (let x = 0; x < cur.matrix[y].length; x++) {
+            if (cur.matrix[y][x]) {
+              const px = cur.pos.x + x;
+              const py = cur.pos.y + y;
+              if (px >= 0 && px < COLS && py >= 0) {
+                minX = Math.min(minX, px);
+                maxX = Math.max(maxX, px);
+                minY = Math.min(minY, py);
+                maxY = Math.max(maxY, py);
+                hasCells = true;
+              }
+            }
+          }
         }
-      for (let y = 0; y < cur.matrix.length; y++)
-        for (let x = 0; x < cur.matrix[y].length; x++) {
-          if (!cur.matrix[y][x]) continue;
-          const px = cur.pos.x + x,
-            py = cur.pos.y + y;
-          if (py < 0) continue;
-          drawCell(ctx, px, py, cur.kind, cur.color, 1);
+
+        if (hasCells) {
+          // Calculate center cell (rounded to nearest integer)
+          const centerX = Math.round((minX + maxX) / 2);
+          const centerY = Math.round((minY + maxY) / 2);
+
+          // Create 3x3 visible area around center
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const vx = centerX + dx;
+              const vy = centerY + dy;
+              if (vx >= 0 && vx < COLS && vy >= 0 && vy < ROWS) {
+                visibleArea[`${vx},${vy}`] = true;
+              }
+            }
+          }
         }
-    }
-  }, []);
+      }
+
+      // Draw board cells with fog effect
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const c = board[y][x];
+          if (c.filled) {
+            // In fog mode, only draw if in visible area (100% invisible outside)
+            if (fogMode && !visibleArea[`${x},${y}`]) {
+              continue; // Skip drawing - 100% invisible
+            }
+            drawCell(ctx, x, y, c.kind ?? null, c.color || "#fff", 1);
+          }
+        }
+      }
+
+      // Draw ghost piece and current piece
+      if (cur) {
+        const ghost: Piece = { ...cur, pos: { ...cur.pos } };
+        while (!collides(ghost, board, { x: 0, y: 1 })) ghost.pos.y++;
+
+        // Draw ghost piece with fog effect
+        for (let y = 0; y < cur.matrix.length; y++) {
+          for (let x = 0; x < cur.matrix[y].length; x++) {
+            if (!cur.matrix[y][x]) continue;
+            const gx = ghost.pos.x + x,
+              gy = ghost.pos.y + y;
+            if (gy < 0) continue;
+            // In fog mode, only draw ghost if in visible area (100% invisible outside)
+            if (fogMode && !visibleArea[`${gx},${gy}`]) {
+              continue; // Skip drawing - 100% invisible
+            }
+            drawCell(ctx, gx, gy, cur.kind, cur.color, 0.35);
+          }
+        }
+
+        // Draw current piece (always fully visible)
+        for (let y = 0; y < cur.matrix.length; y++) {
+          for (let x = 0; x < cur.matrix[y].length; x++) {
+            if (!cur.matrix[y][x]) continue;
+            const px = cur.pos.x + x,
+              py = cur.pos.y + y;
+            if (py < 0) continue;
+            drawCell(ctx, px, py, cur.kind, cur.color, 1);
+          }
+        }
+      }
+    },
+    [fogMode]
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -568,7 +725,14 @@ export default function GameClient({ initialName }: Props) {
       accRef.current += dt;
       while (accRef.current >= gravityMsRef.current) {
         accRef.current -= gravityMsRef.current;
-        softDrop();
+
+        // Apply speed challenge effect
+        if (challenge.type === "speed") {
+          softDrop();
+          softDrop(); // Double drop speed
+        } else {
+          softDrop();
+        }
       }
       draw(ctx);
       reqRef.current = requestAnimationFrame(loop);
@@ -578,9 +742,14 @@ export default function GameClient({ initialName }: Props) {
       if (reqRef.current) cancelAnimationFrame(reqRef.current);
       reqRef.current = null;
     };
-  }, [draw, running, softDrop, spawn, paused]);
+  }, [draw, running, softDrop, spawn, paused, challenge.type]);
 
-  const size = useMemo(() => ({ w: COLS * CELL, h: ROWS * CELL }), []);
+  // PvE/AI removed — single-player only, no second canvas or AI loop
+
+  const size = useMemo(
+    () => ({ w: COLS * DRAW_CELL, h: ROWS * DRAW_CELL }),
+    []
+  );
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-center gap-6 bg-cover bg-center text-white overflow-hidden">
@@ -597,7 +766,7 @@ export default function GameClient({ initialName }: Props) {
           loop
           playsInline
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-black/60 to-transparent" />
+        <div className="absolute inset-0 bg-linear-to-r from-black/60 to-transparent" />
       </div>
       <div
         aria-hidden
@@ -611,7 +780,7 @@ export default function GameClient({ initialName }: Props) {
           loop
           playsInline
         />
-        <div className="absolute inset-0 bg-gradient-to-l from-black/60 to-transparent" />
+        <div className="absolute inset-0 bg-linear-to-l from-black/60 to-transparent" />
       </div>
 
       {/* Main content */}
@@ -630,12 +799,27 @@ export default function GameClient({ initialName }: Props) {
             <span>
               Level: <span className="font-semibold text-white">{level}</span>
             </span>
+            {challenge.type !== "none" && (
+              <span className="animate-pulse text-yellow-400">
+                {challenge.type === "speed" ? "⚡ Speed Up!" : "↔️ Reversed!"}
+              </span>
+            )}
             <span>
               Best:{" "}
               <span className="font-semibold text-white">
                 {mounted ? best : 0}
               </span>
             </span>
+            <button
+              onClick={() => setFogMode((prev) => !prev)}
+              className={`rounded-md border border-white/10 ${
+                fogMode
+                  ? "bg-blue-600 hover:bg-blue-500"
+                  : "bg-white/10 hover:bg-white/20"
+              } px-3 py-1 text-xs transition`}
+            >
+              Fog Mode
+            </button>
             <button
               onClick={() => setPaused((v) => !v)}
               className="rounded-md border border-white/10 bg-white/10 px-3 py-1 text-xs transition hover:bg-white/20"
@@ -658,12 +842,17 @@ export default function GameClient({ initialName }: Props) {
         </div>
 
         <div className="relative mt-4 w-fit mx-auto rounded-2xl border border-white/10 bg-white/5 p-4 shadow-2xl backdrop-blur">
-          <canvas
-            ref={canvasRef}
-            width={size.w}
-            height={size.h}
-            className="h-[84vmin] w-[42vmin] max-h-[720px] max-w-[360px] rounded-xl"
-          />
+          <div className="flex items-center justify-center">
+            <div className="relative">
+              <canvas
+                ref={canvasRef}
+                width={size.w}
+                height={size.h}
+                style={{ width: size.w + "px", height: size.h + "px" }}
+                className={`h-[84vmin] w-[42vmin] max-h-[720px] max-w-[360px] rounded-xl`}
+              />
+            </div>
+          </div>
           {!running && (
             <div className="absolute inset-0 grid place-items-center rounded-xl bg-black/60">
               <div className="text-center">
@@ -691,10 +880,30 @@ export default function GameClient({ initialName }: Props) {
               </div>
             </div>
           )}
-          {paused && running && (
+          {(paused || countdown !== null) && running && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl bg-black/50">
-              <div className="rounded-md border border-white/10 bg-white/10 px-4 py-2 text-sm">
-                Paused
+              <div className="rounded-md border border-white/10 bg-white/10 px-8 py-4 text-sm">
+                {countdown !== null ? (
+                  <div className="text-center">
+                    <div className="mb-2 text-xl font-bold">
+                      Challenge Alert!
+                    </div>
+                    <div className="text-3xl font-bold text-yellow-400 mb-4">
+                      {countdown}
+                    </div>
+                    {challenge.type === "speed" ? (
+                      <div className="text-xl text-yellow-400 mb-2">
+                        ⚡ Speed Challenge!
+                      </div>
+                    ) : (
+                      <div className="text-xl text-yellow-400 mb-2">
+                        ↔️ Reversed Controls!
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  "Paused"
+                )}
               </div>
             </div>
           )}

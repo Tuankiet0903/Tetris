@@ -29,12 +29,10 @@ export default function Home() {
       className="flex min-h-screen items-center justify-center bg-linear-to-br from-zinc-900 via-black to-zinc-900 text-white bg-center bg-cover"
       style={{ backgroundImage: "url('/images/Yasou_backgroud.jpg')" }}
     >
-      <main className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur">
+      <main className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur text-black font-bold">
         <div className="mb-6 text-center">
           <h1 className="text-3xl font-semibold">Tetris Arcade</h1>
-          <p className="mt-2 text-sm text-zinc-300">
-            Enter your name to start playing
-          </p>
+          <p className="mt-2 text-sm">Enter your name to start playing</p>
         </div>
         <form onSubmit={onStart} className="space-y-4">
           <input

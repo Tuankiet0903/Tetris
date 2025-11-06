@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import GameClient from "./gameClient";
 
-export default function Page({
+export default async function Page({
   searchParams,
 }: {
   searchParams: { name?: string };
@@ -12,3 +12,4 @@ export default function Page({
     </Suspense>
   );
 }
+  
