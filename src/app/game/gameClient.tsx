@@ -3,6 +3,14 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
+// Imports: hooks provide game state/logic; utils contain pure helpers
+import { useGameLogic } from "./hooks/useGameLogic";
+import { useChallenge } from "./hooks/useChallenge";
+import { useTetris } from "./hooks/useTetris";
+import { useSound } from "./hooks/useSound";
+
+import * as MatrixUtils from "./utils/matrix";
+
 declare global {
   interface Window {
     webkitAudioContext?: typeof AudioContext;
@@ -16,13 +24,7 @@ type Cell = { filled: boolean; color?: string; kind?: Tetromino };
 
 type Props = { initialName?: string };
 
-type Challenge = {
-  type: "speed" | "reverse" | "none";
-  duration: number;
-  startTime: number | null;
-};
-
-// Single-player only: PvE/AI removed
+// Single-player
 type LastAction = "none" | "move" | "soft" | "hard" | "rotate";
 
 const COLS = 10;
@@ -33,113 +35,7 @@ const SCALE = 2;
 // DRAW_CELL is the pixel size used for canvas drawing (keeps game logic in cell units)
 const DRAW_CELL = CELL * SCALE;
 
-const COLORS: Record<Tetromino, string> = {
-  I: "#06b6d4",
-  J: "#3b82f6",
-  L: "#f59e0b",
-  O: "#eab308",
-  S: "#22c55e",
-  T: "#a855f7",
-  Z: "#ef4444",
-};
-
-const SHAPES: Record<Tetromino, Matrix> = {
-  I: [
-    [0, 0, 0, 0],
-    [1, 1, 1, 1],
-    [0, 0, 0, 0],
-    [0, 0, 0, 0],
-  ],
-  J: [
-    [1, 0, 0],
-    [1, 1, 1],
-    [0, 0, 0],
-  ],
-  L: [
-    [0, 0, 1],
-    [1, 1, 1],
-    [0, 0, 0],
-  ],
-  O: [
-    [1, 1],
-    [1, 1],
-  ],
-  S: [
-    [0, 1, 1],
-    [1, 1, 0],
-    [0, 0, 0],
-  ],
-  T: [
-    [0, 1, 0],
-    [1, 1, 1],
-    [0, 0, 0],
-  ],
-  Z: [
-    [1, 1, 0],
-    [0, 1, 1],
-    [0, 0, 0],
-  ],
-};
-
-function rotateCW(m: Matrix): Matrix {
-  const h = m.length,
-    w = m[0].length;
-  const r: Matrix = Array.from({ length: w }, () => Array(h).fill(0));
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) r[x][h - 1 - y] = m[y][x];
-  return r;
-}
-
-function rotateCCW(m: Matrix): Matrix {
-  const h = m.length,
-    w = m[0].length;
-  const r: Matrix = Array.from({ length: w }, () => Array(h).fill(0));
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) r[w - 1 - x][y] = m[y][x];
-  return r;
-}
-
-function useSound(src: string, fallbackFreq?: number) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const ctxRef = useRef<AudioContext | null>(null);
-
-  useEffect(() => {
-    audioRef.current = new Audio(src);
-    audioRef.current.preload = "auto";
-  }, [src]);
-
-  const play = useCallback(() => {
-    const a = audioRef.current;
-    if (!a) {
-      if (fallbackFreq == null) return;
-      try {
-        if (!ctxRef.current) {
-          const AudioCtx = window.AudioContext || window.webkitAudioContext!;
-          ctxRef.current = new AudioCtx();
-        }
-        const ctx = ctxRef.current!;
-        const o = ctx.createOscillator();
-        const g = ctx.createGain();
-        o.frequency.value = fallbackFreq!;
-        g.gain.value = 0.05;
-        o.connect(g);
-        g.connect(ctx.destination);
-        o.start();
-        setTimeout(() => {
-          o.stop();
-          o.disconnect();
-          g.disconnect();
-        }, 100);
-      } catch {}
-      return;
-    }
-    a.currentTime = 0;
-    a.volume = 0.6;
-    a.play().catch(() => {});
-  }, [fallbackFreq]);
-
-  return play;
-}
+// utilities and hooks in separate files
 
 type Piece = {
   kind: Tetromino;
@@ -148,36 +44,36 @@ type Piece = {
   color: string;
 };
 
-function newBag(): Tetromino[] {
-  const bag = Object.keys(SHAPES) as Tetromino[];
-  for (let i = bag.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [bag[i], bag[j]] = [bag[j], bag[i]];
-  }
-  return bag;
-}
-
-function createEmptyBoard(): Cell[][] {
-  return Array.from({ length: ROWS }, () =>
-    Array.from({ length: COLS }, () => ({ filled: false }))
-  );
-}
+// utilities and hooks in separate files
 
 export default function GameClient({ initialName }: Props) {
   const router = useRouter();
 
-  // Player name state management
-  const [player, setPlayer] = useState(initialName || "Player");
+  // Player display name (kept locally for UI)
+  const [player] = useState(initialName || "Player");
 
-  // Update player name from localStorage after mount
-  useEffect(() => {
-    const savedName = localStorage.getItem("playerName");
-    if (savedName) {
-      setPlayer(savedName);
-    }
-  }, []);
+  // Hooks for modularized logic
+  const {
+    score,
+    setScore,
+    lines,
+    setLines,
+    level,
+    setLevel,
+    best,
+    setBest,
+    // updateScore, calculateSpeed, updateLevel (not used in this component)
+  } = useGameLogic();
+  const {
+    challenge,
+    countdown,
+    paused,
+    setPaused,
+    setChallenge,
+    startChallenge,
+  } = useChallenge();
 
-  // Images
+  // Preload block tile images used for canvas rendering
   const blockImgRef = useRef<Partial<Record<Tetromino, HTMLImageElement>>>({});
   useEffect(() => {
     (["I", "J", "L", "O", "S", "T", "Z"] as Tetromino[]).forEach((k) => {
@@ -194,34 +90,26 @@ export default function GameClient({ initialName }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const reqRef = useRef<number | null>(null);
   const [fogMode, setFogMode] = useState(false);
-  // single-player mode only
+  // Core game state provided by the `useTetris` hook (board, current piece, next bag, refs)
+  const {
+    boardRef,
+    curRef,
+    nextRef,
+    gravityMsRef,
+    accRef,
+    lastTimeRef,
+    running,
+    setRunning,
+    spawn,
+    merge,
+    checkCollision,
+  } = useTetris();
 
-  // Keep old refs for backward compatibility with existing code
-  const boardRef = useRef<Cell[][]>(createEmptyBoard());
-  const curRef = useRef<Piece | null>(null);
-  const nextRef = useRef<Tetromino[]>(newBag());
-  const gravityMsRef = useRef(800);
-  const accRef = useRef(0);
-  const lastTimeRef = useRef(0);
   const lastActionRef = useRef<LastAction>("none");
   const rotatedWithKickRef = useRef(false);
   const b2bRef = useRef(false);
 
-  // PvE/AI removed
-
-  // Keep score/lines/level in state for UI updates
-  const [score, setScore] = useState(0);
-  const [lines, setLines] = useState(0);
-  const [level, setLevel] = useState(1);
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [seenChallenges, setSeenChallenges] = useState<Set<string>>(new Set());
-  const [challenge, setChallenge] = useState<Challenge>({
-    type: "none",
-    duration: 0,
-    startTime: null,
-  });
-  // AI/PvE removed
-  const [best, setBest] = useState<number>(0);
+  // Game meta state from hooks
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
@@ -229,51 +117,26 @@ export default function GameClient({ initialName }: Props) {
       const v = localStorage.getItem("bestScoreTetris");
       if (v) setBest(Number(v));
     } catch {}
-  }, []);
+  }, [setBest]);
 
-  // Keep the game paused while a challenge countdown is visible.
-  // Some code paths may try to toggle paused; this guarantees pause
-  // whenever countdown is active so pieces won't fall while the
-  // challenge title/countdown is shown.
+  // Pause while challenge countdown visible
   useEffect(() => {
     if (countdown !== null) setPaused(true);
-  }, [countdown]);
-  const [running, setRunning] = useState(true);
-  const [paused, setPaused] = useState(false);
+  }, [countdown, setPaused]);
+  // running/paused are managed by hooks: `useTetris` and `useChallenge`.
 
   const playMove = useSound("/sounds/move.mp3", 700);
   const playRotate = useSound("/sounds/rotate.mp3", 900);
   const playLock = useSound("/sounds/drop.mp3", 300);
   const playLine = useSound("/sounds/line.mp3", 600);
-  const playOver = useSound("/sounds/gameover.mp3", 200);
+  // optional sounds
 
   const scoreRef = useRef(score);
   useEffect(() => {
     scoreRef.current = score;
   }, [score]);
 
-  const spawn = useCallback(() => {
-    if (nextRef.current.length <= 2) nextRef.current.push(...newBag());
-    const kind = nextRef.current.shift() as Tetromino;
-    const matrix = SHAPES[kind].map((r) => r.slice());
-    const color = COLORS[kind];
-    const width = matrix[0].length;
-    const pos = { x: Math.floor((COLS - width) / 2), y: -matrix.length + 1 };
-    const piece: Piece = { kind, matrix, pos, color };
-    if (collides(piece, boardRef.current, { x: 0, y: 0 })) {
-      setRunning(false);
-      playOver();
-      setBest((prev) => {
-        const b = Math.max(prev, scoreRef.current);
-        if (typeof window !== "undefined")
-          localStorage.setItem("bestScoreTetris", String(b));
-        return b;
-      });
-      // Player died — regular game over handling above is sufficient
-      return;
-    }
-    curRef.current = piece;
-  }, [playOver]);
+  // low-level board ops provided by useTetris
 
   function drawCell(
     ctx: CanvasRenderingContext2D,
@@ -305,60 +168,38 @@ export default function GameClient({ initialName }: Props) {
     ctx.restore();
   }
 
-  const collides = (p: Piece, board: Cell[][], delta: Point) => {
-    const { matrix, pos } = p;
-    for (let y = 0; y < matrix.length; y++) {
-      for (let x = 0; x < matrix[y].length; x++) {
-        if (!matrix[y][x]) continue;
-        const nx = pos.x + x + delta.x;
-        const ny = pos.y + y + delta.y;
-        if (ny < 0) continue;
-        if (nx < 0 || nx >= COLS || ny >= ROWS) return true;
-        if (board[ny][nx].filled) return true;
+  const isTSpin = useCallback(
+    (cur: Piece): { type: "none" | "mini" | "full" } => {
+      if (cur.kind !== "T") return { type: "none" };
+      if (lastActionRef.current !== "rotate") return { type: "none" };
+      const c = { x: cur.pos.x + 1, y: cur.pos.y + 1 };
+      const corners: Point[] = [
+        { x: c.x - 1, y: c.y - 1 },
+        { x: c.x + 1, y: c.y - 1 },
+        { x: c.x - 1, y: c.y + 1 },
+        { x: c.x + 1, y: c.y + 1 },
+      ];
+      let blocked = 0;
+      for (const p of corners) {
+        if (p.y < 0 || p.x < 0 || p.x >= COLS || p.y >= ROWS) blocked++;
+        else if (boardRef.current[p.y][p.x].filled) blocked++;
       }
-    }
-    return false;
-  };
+      if (blocked >= 3)
+        return { type: rotatedWithKickRef.current ? "mini" : "full" };
+      return { type: "none" };
+    },
+    [boardRef, lastActionRef, rotatedWithKickRef]
+  );
 
-  const merge = (p: Piece) => {
-    const board = boardRef.current;
-    const { matrix, pos, color, kind } = p;
-    for (let y = 0; y < matrix.length; y++) {
-      for (let x = 0; x < matrix[y].length; x++) {
-        if (!matrix[y][x]) continue;
-        const bx = pos.x + x,
-          by = pos.y + y;
-        if (by >= 0) board[by][bx] = { filled: true, color, kind };
-      }
-    }
-  };
-
-  function isTSpin(cur: Piece): { type: "none" | "mini" | "full" } {
-    if (cur.kind !== "T") return { type: "none" };
-    if (lastActionRef.current !== "rotate") return { type: "none" };
-    const c = { x: cur.pos.x + 1, y: cur.pos.y + 1 };
-    const corners: Point[] = [
-      { x: c.x - 1, y: c.y - 1 },
-      { x: c.x + 1, y: c.y - 1 },
-      { x: c.x - 1, y: c.y + 1 },
-      { x: c.x + 1, y: c.y + 1 },
-    ];
-    let blocked = 0;
-    for (const p of corners) {
-      if (p.y < 0 || p.x < 0 || p.x >= COLS || p.y >= ROWS) blocked++;
-      else if (boardRef.current[p.y][p.x].filled) blocked++;
-    }
-    if (blocked >= 3)
-      return { type: rotatedWithKickRef.current ? "mini" : "full" };
-    return { type: "none" };
-  }
-
+  // Return true if the board contains no filled cells
   function isPerfectClear(board: Cell[][]) {
     for (let y = 0; y < ROWS; y++)
       for (let x = 0; x < COLS; x++) if (board[y][x].filled) return false;
     return true;
   }
 
+  // Handle clearing full lines: remove rows, compute scoring, update level/gravity,
+  // and trigger a challenge if appropriate.
   const clearLines = useCallback(() => {
     let cleared = 0;
     const board = boardRef.current;
@@ -411,63 +252,33 @@ export default function GameClient({ initialName }: Props) {
 
       setScore((s) => s + gained);
 
-      // Calculate new level - every 5 lines
+      // Calculate new level (every 5 lines cleared increments level)
       const newLevel = 1 + Math.floor((lines + cleared) / 5);
       setLevel(newLevel);
-      // Adjust gravity speed - reduce by 120ms each level
+      // Adjust gravity timing (ms per drop) - linear reduction per level
       const baseSpeed = 800;
       const reduction = (newLevel - 1) * 120; // 120ms reduction per level
       gravityMsRef.current = Math.max(120, baseSpeed - reduction);
 
-      // Trigger challenges at specific levels
-      if (newLevel % 2 === 0) {
-        // Every 2 levels
-        setPaused(true);
-        // Alternate between speed and reverse challenges
-        // Level 2, 6, 10... -> Speed Challenge
-        // Level 4, 8, 12... -> Reverse Challenge
-        const challengeType = newLevel % 4 === 0 ? "reverse" : "speed";
-        const newChallenge: Challenge = {
-          type: challengeType as "speed" | "reverse",
-          duration: 30000,
-          startTime: null,
-        };
-
-        // Check if this is first time seeing this challenge
-        const isFirstTime = !seenChallenges.has(challengeType); // Longer countdown for first time (5s), shorter for repeats (3s)
-        const initialCountdown = isFirstTime ? 5 : 3;
-        setCountdown(initialCountdown);
-
-        const countdownInterval = setInterval(() => {
-          setPaused(true);
-          setCountdown((prev) => {
-            if (prev === null || prev <= 1) {
-              clearInterval(countdownInterval);
-              // Countdown finished: start the challenge and resume gameplay
-              setChallenge({ ...newChallenge, startTime: Date.now() });
-              setPaused(false);
-              // Mark challenge as seen
-              if (isFirstTime) {
-                setSeenChallenges(
-                  (prev) => new Set([...prev, newChallenge.type])
-                );
-              }
-              return null;
-            }
-            return prev - 1;
-          });
-        }, 1000);
-
-        // Reset challenge after duration
-        setTimeout(() => {
-          setChallenge({ type: "none", duration: 0, startTime: null });
-        }, newChallenge.duration + (isFirstTime ? 5000 : 3000)); // Add countdown time
-      }
+      // Trigger challenge lifecycle (startCountdown/startChallenge) via hook
+      startChallenge(newLevel);
 
       rotatedWithKickRef.current = false;
       lastActionRef.current = "none";
     }
-  }, [level, lines, playLine, seenChallenges]);
+  }, [
+    level,
+    lines,
+    playLine,
+    boardRef,
+    curRef,
+    gravityMsRef,
+    isTSpin,
+    setLevel,
+    setLines,
+    setScore,
+    startChallenge,
+  ]);
 
   const hardDrop = useCallback(() => {
     if (paused) return;
@@ -475,7 +286,7 @@ export default function GameClient({ initialName }: Props) {
     const cur = curRef.current;
     if (!cur || !running) return;
     let d = 0;
-    while (!collides(cur, boardRef.current, { x: 0, y: 1 })) {
+    while (!checkCollision(cur, { x: 0, y: 1 })) {
       cur.pos.y++;
       d++;
     }
@@ -484,7 +295,17 @@ export default function GameClient({ initialName }: Props) {
     merge(cur);
     clearLines();
     spawn();
-  }, [running, playLock, clearLines, spawn, paused]);
+  }, [
+    running,
+    playLock,
+    clearLines,
+    spawn,
+    paused,
+    checkCollision,
+    curRef,
+    merge,
+    setScore,
+  ]);
 
   const move = useCallback(
     (dx: number) => {
@@ -496,12 +317,12 @@ export default function GameClient({ initialName }: Props) {
       // Reverse movement if challenge is active
       const actualDx = challenge.type === "reverse" ? -dx : dx;
 
-      if (!collides(cur, boardRef.current, { x: actualDx, y: 0 })) {
+      if (!checkCollision(cur, { x: actualDx, y: 0 })) {
         cur.pos.x += actualDx;
         playMove();
       }
     },
-    [running, playMove, paused, challenge.type]
+    [running, playMove, paused, challenge.type, checkCollision, curRef]
   );
 
   const softDrop = useCallback(() => {
@@ -509,7 +330,7 @@ export default function GameClient({ initialName }: Props) {
     lastActionRef.current = "soft";
     const cur = curRef.current;
     if (!cur || !running) return;
-    if (!collides(cur, boardRef.current, { x: 0, y: 1 })) {
+    if (!checkCollision(cur, { x: 0, y: 1 })) {
       cur.pos.y += 1;
       setScore((s) => s + 1);
     } else {
@@ -518,18 +339,30 @@ export default function GameClient({ initialName }: Props) {
       clearLines();
       spawn();
     }
-  }, [running, playLock, clearLines, spawn, paused]);
+  }, [
+    running,
+    playLock,
+    clearLines,
+    spawn,
+    paused,
+    checkCollision,
+    curRef,
+    merge,
+    setScore,
+  ]);
 
   const rotate = useCallback(
     (ccw = false) => {
       const cur = curRef.current;
       if (!cur || !running || paused) return;
-      const m = ccw ? rotateCCW(cur.matrix) : rotateCW(cur.matrix);
+      const m = ccw
+        ? MatrixUtils.rotateCCW(cur.matrix)
+        : MatrixUtils.rotateCW(cur.matrix);
       const trial: Piece = { ...cur, matrix: m, pos: { ...cur.pos } };
       const kicks = [0, -1, 1, -2, 2];
       for (const k of kicks) {
         trial.pos.x = cur.pos.x + k;
-        if (!collides(trial, boardRef.current, { x: 0, y: 0 })) {
+        if (!checkCollision(trial, { x: 0, y: 0 })) {
           cur.matrix = m;
           cur.pos.x = trial.pos.x;
           rotatedWithKickRef.current = k !== 0;
@@ -539,16 +372,16 @@ export default function GameClient({ initialName }: Props) {
         }
       }
     },
-    [running, playRotate, paused]
+    [running, playRotate, paused, checkCollision, curRef]
   );
 
-  // AI/PvE code removed - single player only
+  // Input handlers
 
   const reset = useCallback(() => {
     boardRef.current = Array.from({ length: ROWS }, () =>
       Array.from({ length: COLS }, () => ({ filled: false }))
     );
-    nextRef.current = newBag();
+    nextRef.current = MatrixUtils.newBag();
     curRef.current = null;
     setScore(0);
     setLines(0);
@@ -564,8 +397,21 @@ export default function GameClient({ initialName }: Props) {
     setChallenge({ type: "none", duration: 0, startTime: null });
 
     spawn();
-  }, [spawn]);
+  }, [
+    spawn,
+    boardRef,
+    curRef,
+    gravityMsRef,
+    nextRef,
+    setChallenge,
+    setLevel,
+    setLines,
+    setPaused,
+    setRunning,
+    setScore,
+  ]);
 
+  // Keyboard handler
   useEffect(() => {
     reset();
   }, [reset]);
@@ -592,8 +438,9 @@ export default function GameClient({ initialName }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [running, reset, move, softDrop, rotate, hardDrop]);
+  }, [running, reset, move, softDrop, rotate, hardDrop, setPaused]);
 
+  // Draw frame (respects fogMode)
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D) => {
       const W = ctx.canvas.width,
@@ -684,7 +531,7 @@ export default function GameClient({ initialName }: Props) {
       // Draw ghost piece and current piece
       if (cur) {
         const ghost: Piece = { ...cur, pos: { ...cur.pos } };
-        while (!collides(ghost, board, { x: 0, y: 1 })) ghost.pos.y++;
+        while (!checkCollision(ghost, { x: 0, y: 1 })) ghost.pos.y++;
 
         // Draw ghost piece with fog effect
         for (let y = 0; y < cur.matrix.length; y++) {
@@ -713,9 +560,10 @@ export default function GameClient({ initialName }: Props) {
         }
       }
     },
-    [fogMode]
+    [fogMode, boardRef, checkCollision, curRef]
   );
 
+  // Game loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -751,9 +599,18 @@ export default function GameClient({ initialName }: Props) {
       if (reqRef.current) cancelAnimationFrame(reqRef.current);
       reqRef.current = null;
     };
-  }, [draw, running, softDrop, spawn, paused, challenge.type]);
-
-  // PvE/AI removed — single-player only, no second canvas or AI loop
+  }, [
+    draw,
+    running,
+    softDrop,
+    spawn,
+    paused,
+    challenge.type,
+    accRef,
+    curRef,
+    gravityMsRef,
+    lastTimeRef,
+  ]);
 
   const size = useMemo(
     () => ({ w: COLS * DRAW_CELL, h: ROWS * DRAW_CELL }),
