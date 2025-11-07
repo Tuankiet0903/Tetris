@@ -33,6 +33,9 @@ export default function Home() {
         <div className="mb-6 text-center">
           <h1 className="text-3xl font-semibold">Tetris Arcade</h1>
           <p className="mt-2 text-sm">Enter your name to start playing</p>
+          <p className="text-2xl font-bold text-red-600 mt-4 animate-pulse">
+            Everything is a feature, not a bug!
+          </p>
         </div>
         <form onSubmit={onStart} className="space-y-4">
           <input

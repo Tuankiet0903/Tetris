@@ -230,9 +230,16 @@ export default function GameClient({ initialName }: Props) {
       if (v) setBest(Number(v));
     } catch {}
   }, []);
+
+  // Keep the game paused while a challenge countdown is visible.
+  // Some code paths may try to toggle paused; this guarantees pause
+  // whenever countdown is active so pieces won't fall while the
+  // challenge title/countdown is shown.
+  useEffect(() => {
+    if (countdown !== null) setPaused(true);
+  }, [countdown]);
   const [running, setRunning] = useState(true);
   const [paused, setPaused] = useState(false);
-  // PvE/AI and winner state removed
 
   const playMove = useSound("/sounds/move.mp3", 700);
   const playRotate = useSound("/sounds/rotate.mp3", 900);
@@ -432,11 +439,13 @@ export default function GameClient({ initialName }: Props) {
         setCountdown(initialCountdown);
 
         const countdownInterval = setInterval(() => {
+          setPaused(true);
           setCountdown((prev) => {
             if (prev === null || prev <= 1) {
               clearInterval(countdownInterval);
-              setPaused(false);
+              // Countdown finished: start the challenge and resume gameplay
               setChallenge({ ...newChallenge, startTime: Date.now() });
+              setPaused(false);
               // Mark challenge as seen
               if (isFirstTime) {
                 setSeenChallenges(
